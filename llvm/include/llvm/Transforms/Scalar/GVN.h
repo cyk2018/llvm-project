@@ -29,6 +29,7 @@
 #include <optional>
 #include <utility>
 #include <vector>
+#include <set>
 
 namespace llvm {
 
@@ -175,6 +176,22 @@ public:
 
     uint32_t nextValueNumber = 1;
 
+    // add for phi-gvn
+    // use this to store phi-gvn information
+    // you can not use BasicBlock be the second-dim key like phiTranslateTable 
+    // because Select Inst can not deal with BasicBlock
+    using PhiTable = DenseMap<std::pair<Value *, uint32_t>, uint32_t>;
+    PhiTable phiTable;
+
+    // first-dim of condTable is condition Value, second-dim is Cond-Index
+    DenseMap<Value *, uint32_t> condTable;
+    uint32_t condTableIndex = 1;
+
+    std::set<Value *> phiSet;
+
+
+
+
     Expression createExpr(Instruction *I);
     Expression createCmpExpr(unsigned Opcode, CmpInst::Predicate Predicate,
                              Value *LHS, Value *RHS);
@@ -212,6 +229,11 @@ public:
     void setDomTree(DominatorTree *D) { DT = D; }
     uint32_t getNextUnusedValueNumber() { return nextValueNumber; }
     void verifyRemoved(const Value *) const;
+
+    //add for phi-gvn
+    void addPhiTable(Instruction *I);
+    void outputPhiTable();
+    bool isPhiSet(Value *v) { return this->phiSet.count(v) == 1; }
   };
 
 private:

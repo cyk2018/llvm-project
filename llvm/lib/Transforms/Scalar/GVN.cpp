@@ -707,6 +707,8 @@ void GVNPass::ValueTable::clear() {
   Expressions.clear();
   ExprIdx.clear();
   nextExprNumber = 0;
+
+  phiTable.clear();
 }
 
 /// Remove a value from the value numbering.
@@ -731,6 +733,7 @@ void GVNPass::ValueTable::verifyRemoved(const Value *V) const {
 
 /// Push a new Value to the LeaderTable onto the list for its value number.
 void GVNPass::LeaderMap::insert(uint32_t N, Value *V, const BasicBlock *BB) {
+  LLVM_DEBUG(dbgs() << "insert: " << N << " for " << V->getName() << "\n");
   LeaderListNode &Curr = NumToLeaders[N];
   if (!Curr.Entry.Val) {
     Curr.Entry.Val = V;
@@ -2610,6 +2613,70 @@ bool GVNPass::propagateEquality(Value *LHS, Value *RHS,
   return Changed;
 }
 
+void GVNPass::ValueTable::addPhiTable(Instruction *I) {
+  // variables have many different value number will insert into this set
+  this->phiSet.insert(I);
+
+  // phi inst don't need calculate index
+  if(isa<PHINode>(I)) {
+    auto phiInst = dyn_cast<PHINode>(I);
+
+    for(uint32_t i = 0; i < phiInst->getNumOperands(); i++) {
+      auto V = phiInst->getIncomingValue(i);
+      auto vn = this->lookup(V, false);
+      // phi inst will use phi index as second-dim key
+      phiTable.insert({{V, i}, vn});
+    }
+
+    return;
+  }
+  
+  
+
+  if(isa<SelectInst>(I)) {
+    auto selectInst = dyn_cast<SelectInst>(I);
+
+    auto condValue = selectInst->getCondition();
+    auto iter = condTable.find(condValue);
+    uint32_t index;
+    if(iter == condTable.end()) {
+      // not found
+      condTable.insert({condValue, condTableIndex});
+      index = condTableIndex;
+      condTableIndex++;
+    } else {
+      index = iter->second;
+    }
+
+
+    // SelectInst only has true and false conditions.
+    auto trueValue = selectInst->getTrueValue();
+    auto falseValue = selectInst->getFalseValue();
+    auto vn1 = this->lookup(trueValue, false);
+    auto vn2 = this->lookup(falseValue, false);
+    phiTable.insert({{I, 2*(index)}, vn1});
+    phiTable.insert({{I, 2*(index) + 1}, vn2});
+    
+    return;
+  }
+
+  if(isa<BinaryOperator>(I)) {
+    auto binaryInst = dyn_cast<BinaryOperator>(I);
+    // get every operator and store its vn
+    auto leftValue = I->getOperand(0);
+    auto rightValue = I->getOperand(1);
+
+    if(this->isPhiSet(leftValue)) {
+      // insert double Value to PhiTable
+      // 
+      // phiTable.insert({{I, }})
+    }
+
+  }
+
+  
+}
+
 /// When calculating availability, handle an instruction
 /// by inserting it into the appropriate sets
 bool GVNPass::processInstruction(Instruction *I) {
@@ -2718,9 +2785,35 @@ bool GVNPass::processInstruction(Instruction *I) {
 
   // Allocations are always uniquely numbered, so we can save time and memory
   // by fast failing them.
-  if (isa<AllocaInst>(I) || I->isTerminator() || isa<PHINode>(I)) {
+  if (isa<AllocaInst>(I) || I->isTerminator()) {
     LeaderTable.insert(Num, I, I->getParent());
     return false;
+  }
+
+  if(isa<PHINode>(I)) {
+    // deal with phi node
+    LeaderTable.insert(Num, I, I->getParent());
+
+    // add into phiNode
+    VN.addPhiTable(I);
+
+    
+    return false;
+  }
+
+  if(isa<SelectInst>(I)) {
+    VN.addPhiTable(I);
+    // not return
+  }
+  
+  if(isa<BinaryOperator>(I)) {
+    auto binaryInst = dyn_cast<BinaryOperator>(I);
+    auto leftValue = binaryInst->getOperand(0);
+    auto rightValue = binaryInst->getOperand(1);
+
+    if(VN.isPhiSet(leftValue) || VN.isPhiSet(rightValue)) {
+      VN.addPhiTable(I);
+    }
   }
 
   // If the number we were assigned was a brand new VN, then we don't
@@ -3161,6 +3254,16 @@ bool GVNPass::splitCriticalEdges() {
   return Changed;
 }
 
+void GVNPass::ValueTable::outputPhiTable() {
+  LLVM_DEBUG(dbgs() << "\n\n*****phiTable****\n");
+  for(auto &entry : phiTable) {
+    LLVM_DEBUG(dbgs() <<
+       *(entry.first.first) << "\t" << 
+       entry.first.second << "\t" << 
+       entry.second << "\n");
+  }
+}
+
 /// Executes one iteration of GVN
 bool GVNPass::iterateOnFunction(Function &F) {
   cleanupGlobalSets();
@@ -3172,9 +3275,20 @@ bool GVNPass::iterateOnFunction(Function &F) {
   // processBlock.
   ReversePostOrderTraversal<Function *> RPOT(&F);
 
+  // only run gvn
+  // use to check PROT why not visit every branch before phi node
+  LLVM_DEBUG(dbgs() << "\n\n\n"<< "BB:\n");
+  for(auto BB : RPOT) {
+    LLVM_DEBUG(dbgs() << BB->getName() << "\n");
+  }
+  LLVM_DEBUG(dbgs() << "\n\n");
+
   for (BasicBlock *BB : RPOT)
     Changed |= processBlock(BB);
 
+  // after deal with one function
+  VN.outputPhiTable();
+  
   return Changed;
 }
 
